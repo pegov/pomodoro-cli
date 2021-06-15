@@ -1,5 +1,17 @@
 # pomodoro-cli
 
+## Installation
+
+```
+make
+
+# or
+
+mkdir -p build
+cd build
+cmake ..
+cmake --build .
+```
 ## Usage
 
 ```
