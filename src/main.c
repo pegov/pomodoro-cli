@@ -3,25 +3,24 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include <signal.h>
 
+#include "args.h"
+#include "console.h"
+#include "events.h"
 
 #if defined (_WIN32) || defined(_WIN64) || defined(WIN32) || defined(__MINGW32__)
-#define OS_WINDOWS
-#endif
 
-#ifdef OS_WINDOWS
 #include <windows.h>
 
-#define clrscr() system("cls")
 #define sleep(x) Sleep(x * 1000)
+#define usleep(x) Sleep(x)
 #define beep() Beep(500, 1000)
-
 
 #else
 #include <unistd.h>
-#include <term.h>
+#include <termios.h>
 
-#define clrscr() system("clear")
 #define beep()
 
 #endif
@@ -35,46 +34,39 @@
 #define PD_ACTION_LB 1
 #define PD_ACTION_W 2
 
-
-void parse_args(int argc, char **argv, int *value, int default_value, const char *short_name, const char *long_name)
+void sig_handler(int signum)
 {
-  // TODO: handle --arg=value
-  for (int i = 1; i < argc; i++) {
-    if (strcmp(short_name, argv[i]) == 0 || strcmp(long_name, argv[i]) == 0) {
-      if (argc >= i + 1) {
-        *value = atoi(argv[i+1]);
-        if (*value <= 0) {
-          *value = default_value;
-        }
-      }
-    }
-  }
-  if (!*value)
-    *value = default_value;
+  show_cursor();
+  raise(SIGINT);
 }
 
 int main(int argc, char **argv)
 {
-  int blocks, small_break, long_break, work;
+  signal(SIGINT, sig_handler);
+  atexit(show_cursor);
+
+  int blocks = BLOCKS_BEFORE_LONG_BREAK;
+  int small_break = SMALL_BREAK;
+  int long_break = LONG_BREAK;
+  int work = WORK;
+
   if (argc > 2) {
-    parse_args(argc, argv, &blocks, BLOCKS_BEFORE_LONG_BREAK, "-b", "--blocks");
-    parse_args(argc, argv, &small_break, SMALL_BREAK, "-s", "--small");
-    parse_args(argc, argv, &long_break, LONG_BREAK, "-l", "--long");
-    parse_args(argc, argv, &work, WORK, "-w", "--work");
-  } else {
-    blocks = BLOCKS_BEFORE_LONG_BREAK;
-    small_break = SMALL_BREAK;
-    long_break = LONG_BREAK;
-    work = WORK;
+    find_arg(argc, argv, &blocks, "-b", "--blocks");
+    find_arg(argc, argv, &small_break, "-s", "--small");
+    find_arg(argc, argv, &long_break, "-l", "--long");
+    find_arg(argc, argv, &work, "-w", "--work");
   }
+
+  hide_cursor();
+  clear_screen();
   
   printf("Settings:\n");
   printf("Blocks: %d\n", blocks);
   printf("Small break: %d minutes\n", small_break);
   printf("Long break: %d minutes\n", long_break);
   printf("Work: %d minutes\n", work);
-
   printf("Press ENTER to start\n");
+
   getchar();
 
   small_break = small_break * 60;
@@ -91,38 +83,51 @@ int main(int argc, char **argv)
   int minutes_left, seconds_left;
 
   cur_time = time(NULL);
-  stop_time = cur_time + work;
+  plus_time = work;
+  stop_time = cur_time + plus_time;
+  delta_time = plus_time;
 
   int cur_block = 0;
   int total_blocks = 0;
   int cur_action = PD_ACTION_W;
 
-  char *minutes_prefix;
-  char *seconds_prefix;
+  Flags flags = new_flags();
+  create_event_handler(&flags);
 
-  while (TRUE) {
-    while (cur_time < stop_time) {
-      clrscr();
+  while (1) {
+    while (delta_time > 0) {
+      usleep(500);
+
       cur_time = time(NULL);
-      
+
+      if (flags.quit) {
+        exit(EXIT_SUCCESS);
+      }
+      if (flags.reset) {
+        stop_time = cur_time + plus_time;
+        flags.reset = false;
+        flags.stop = false;
+        flags.start = false;
+        continue;
+      }
+      if (flags.start) {
+        flags.start = false;
+        flags.stop = false;
+        continue;
+      }
+      if (flags.stop) {
+        stop_time = cur_time + delta_time;
+        continue;
+      }
+
       delta_time = stop_time - cur_time;
       if (delta_time < 0)
-        delta_time = 0;
+        break;
       minutes_left = delta_time / 60;
       seconds_left = delta_time % 60;
 
-      if (minutes_left < 10) {
-        minutes_prefix = "0";
-      } else {
-        minutes_prefix = "";
-      }
-      
-      if (seconds_left < 10) {
-        seconds_prefix = "0";
-      } else {
-        seconds_prefix = "";
-      }
 
+      clear_screen();
       printf("Total blocks: %d\n", total_blocks);
       printf("Event: ");
       switch (cur_action) {
@@ -137,9 +142,8 @@ int main(int argc, char **argv)
           printf("Current block: %d out of %d\n", cur_block + 1, blocks);
           break;
       }
-
-      printf("Time left: %s%d:%s%d\n", minutes_prefix, minutes_left, seconds_prefix, seconds_left);
-      sleep(1);
+      printf("Time left: %02d:%02d\n", minutes_left, seconds_left);
+      printf("q - quit\nr - reset\ng - start\ns - stop\n");
     }
 
     switch (cur_action) {
@@ -161,12 +165,10 @@ int main(int argc, char **argv)
         }
     }
 
-    beep();
-    printf("Done!\n");
-    printf("Press ENTER to continue\n");
-    getchar();
+    // beep();
     cur_time = time(NULL);
     stop_time = cur_time + plus_time;
+    delta_time = stop_time - cur_time;
   }
 
   return EXIT_SUCCESS;
